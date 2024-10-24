@@ -91,6 +91,7 @@ static std::string http_post(const char *path, const char *request_json,
   config.url = url.c_str();
   config.event_handler = http_event_handler;
   config.user_data = data.get();
+  config.timeout_ms = 3000;
   esp_http_client_handle_t client = esp_http_client_init(&config);
 
   esp_http_client_set_method(client, HTTP_METHOD_POST);
@@ -120,22 +121,22 @@ static std::string create_call(const CallRequest &request,
   // cJSON_AddStringToObject(request_json, "maxDuration", "00:00:30");
   auto request_str = cJSON_Print(request_json);
   std::string response_str = http_post("/calls", request_str, api_key);
+  free(request_json);
   free(request_str);
 
   ESP_LOGI(LOG_TAG, "Response: %s", response_str.c_str());
+  std::string join_url_str;
   auto response_json = cJSON_Parse(response_str.c_str());
-  if (response_json == NULL) {
+  if (response_json) {
+    auto join_url = cJSON_GetObjectItem(response_json, "joinUrl");
+    if (join_url && cJSON_IsString(join_url)) {
+      join_url_str = join_url->valuestring;
+    } else {
+      ESP_LOGE(LOG_TAG, "Bad JSON response");
+    }
+  } else {
     ESP_LOGE(LOG_TAG, "Failed to parse JSON response");
-    return "";
   }
-
-  auto join_url = cJSON_GetObjectItem(response_json, "joinUrl");
-  if (join_url == NULL || !cJSON_IsString(join_url)) {
-    ESP_LOGE(LOG_TAG, "Bad JSON response");
-    return "";
-  }
-
-  std::string join_url_str = join_url->valuestring;
   cJSON_Delete(response_json);
   return join_url_str;
 }
@@ -208,7 +209,12 @@ static void uv_websocket_event_handler(void *handler_args,
 }
 
 void uv_run(const CallRequest &callRequest, const char *apiKey) {
-  auto join_url = create_call(callRequest, apiKey);
+  const int MAX_RETRIES = 3;
+  std::string join_url;
+  for (int i = 0; i < MAX_RETRIES && join_url.empty(); i++) {
+    join_url = create_call(callRequest, apiKey);
+  }
+  assert(!join_url.empty());
   ESP_LOGI(LOG_TAG, "Call response: %s", join_url.c_str());
 
   esp_websocket_client_config_t ws_cfg;
@@ -216,8 +222,8 @@ void uv_run(const CallRequest &callRequest, const char *apiKey) {
   ws_cfg.uri = join_url.c_str();
   ws_cfg.buffer_size = MTU_SIZE;
   ws_cfg.disable_pingpong_discon = true;
-  ws_cfg.reconnect_timeout_ms = 1000;
-  ws_cfg.network_timeout_ms = 1000;
+  ws_cfg.reconnect_timeout_ms = 3000;
+  ws_cfg.network_timeout_ms = 3000;
 
   auto client = esp_websocket_client_init(&ws_cfg);
   esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY,
