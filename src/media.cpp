@@ -2,36 +2,21 @@
 #include <esp_check.h>
 #include <esp_log.h>
 #include <esp_system.h>
-#include <opus.h>
 
 #include "es8311.h"
 #include "main.h"
 
-#define EXAMPLENUM_CHANNELS 2
+#define EXAMPLE_NUM_CHANNELS 2
 #define SLOT_MODE I2S_SLOT_MODE_STEREO
-#define EXAMPLE_SAMPLE_RATE (8000)
-#define SAMPLE_RATE EXAMPLE_SAMPLE_RATE
-
-#define OPUS_ENCODER_BITRATE 30000  // 64000
-#define OPUS_ENCODER_COMPLEXITY 0
-// Encode: 2 ch, 16-bit, 16Khz, 20 ms = 320 samples/ch = 640 samples = 1280 bits
-#define OPUS_ENCODE_BUFFER_SAMPLES_PER_CHANNEL 320
-#define OPUS_ENCODE_BUFFER_SIZE                                  \
-  OPUS_ENCODE_BUFFER_SAMPLES_PER_CHANNEL *EXAMPLE_NUM_CHANNELS * \
-      sizeof(opus_int16)
-// Decode: 2 ch, 16-bit, 16Khz, <= 120 ms = 1920 samples/ch = 3840 samples =
-// 7680 bits
-#define OPUS_DECODE_BUFFER_SAMPLES_PER_CHANNEL 1920
-#define OPUS_DECODE_BUFFER_SIZE                                  \
-  OPUS_DECODE_BUFFER_SAMPLES_PER_CHANNEL *EXAMPLE_NUM_CHANNELS * \
-      sizeof(opus_int16)
-#define OPUS_OUT_BUFFER_SIZE 4000  // 4000 bytes is recommended by opus_encode
+#define EXAMPLE_SAMPLE_RATE (16000)
 
 /* Example configurations */
 #define EXAMPLE_MCLK_MULTIPLE i2s_mclk_multiple_t(384)
 #define EXAMPLE_MCLK_FREQ_HZ (EXAMPLE_SAMPLE_RATE * EXAMPLE_MCLK_MULTIPLE)
 #define EXAMPLE_VOICE_VOLUME 90  // 80 CONFIG_EXAMPLE_VOICE_VOLUME
 #define EXAMPLE_MIC_GAIN ES8311_MIC_GAIN_12DB
+#define EXAMPLE_BUFFER_SIZE \
+  (EXAMPLE_SAMPLE_RATE * EXAMPLE_NUM_CHANNELS * sizeof(uint16_t) * 20 / 1000)
 
 /* I2C port and GPIOs */
 #define I2C_NUM i2c_port_t(0)
@@ -47,10 +32,10 @@
 #define I2S_DI_IO (GPIO_NUM_10)
 
 static const char *TAG = "media";
-static const char err_reason[][30] = {"input param is invalid",
-                                      "operation timeout"};
 static i2s_chan_handle_t tx_handle = NULL;
 static i2s_chan_handle_t rx_handle = NULL;
+static int16_t *capture_buffer = NULL;
+static size_t bytes_captured = 0;
 
 static esp_err_t es8311_codec_init(void) {
   /* Initialize I2C peripheral */
@@ -131,98 +116,44 @@ static esp_err_t i2s_driver_init(void) {
   return ESP_OK;
 }
 
-void lk_init_audio_capture() {
+void lk_init_audio() {
   if (i2s_driver_init() != ESP_OK) {
-    ESP_LOGE(TAG, "i2s driver init failed");
-    abort();
-  } else {
-    ESP_LOGI(TAG, "i2s driver init success");
+    panic("i2s driver init failed");
   }
-  /* Initialize i2c peripheral and config es8311 codec by i2c */
+  ESP_LOGI(TAG, "i2s driver init success");
+
   if (es8311_codec_init() != ESP_OK) {
-    ESP_LOGE(TAG, "es8311 codec init failed");
-    abort();
-  } else {
-    ESP_LOGI(TAG, "es8311 codec init success");
+    panic("es8311 codec init failed");
   }
+  ESP_LOGI(TAG, "es8311 codec init success");
+
+  capture_buffer = (int16_t *)malloc(EXAMPLE_BUFFER_SIZE);
+  assert(capture_buffer != NULL);
 }
 
-opus_int16 *output_buffer = NULL;
-OpusDecoder *opus_decoder = NULL;
-
-void lk_init_audio_decoder() {
-  int decoder_error = 0;
-  opus_decoder =
-      opus_decoder_create(SAMPLE_RATE, EXAMPLE_NUM_CHANNELS, &decoder_error);
-  if (decoder_error != OPUS_OK) {
-    printf("Failed to create Opus decoder");
-    return;
-  }
-
-  output_buffer = (opus_int16 *)malloc(OPUS_DECODE_BUFFER_SIZE);
-  ESP_LOGI(TAG, "Initialized Opus decoder");
-}
-
-void lk_audio_decode(uint8_t *data, size_t size) {
-  int decoded_samples = opus_decode(opus_decoder, data, size, output_buffer,
-                                    OPUS_DECODE_BUFFER_SAMPLES_PER_CHANNEL, 0);
-  if (decoded_samples <= 0) {
-    ESP_LOGE(TAG, "Failed to decode audio");
-    return;
-  }
-
-  size_t bytes_written = 0;
-#ifndef CONFIG_EXAMPLE_MODE_ECHO
-  size_t bytes_decoded =
-      decoded_samples * EXAMPLE_NUM_CHANNELS * sizeof(opus_int16);
-  int ret = i2s_channel_write(tx_handle, output_buffer, bytes_decoded,
-                              &bytes_written, 1000);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "[echo] i2s write failed, %s",
-             err_reason[ret == ESP_ERR_TIMEOUT]);
-    abort();
-  }
-  if (bytes_written != bytes_decoded) {
-    ESP_LOGW(TAG, "%d bytes read but only %d bytes are written", bytes_decoded,
-             bytes_written);
-  }
-#endif
-}
-
-OpusEncoder *opus_encoder = NULL;
-opus_int16 *encoder_input_buffer = NULL;
-uint8_t *encoder_output_buffer = NULL;
-
-void lk_init_audio_encoder() {
-  int encoder_error;
-  opus_encoder = opus_encoder_create(SAMPLE_RATE, EXAMPLE_NUM_CHANNELS,
-                                     OPUS_APPLICATION_VOIP, &encoder_error);
-  if (encoder_error != OPUS_OK) {
-    printf("Failed to create OPUS encoder");
-    return;
-  }
-
-  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
-  opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
-  opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-  encoder_input_buffer = (opus_int16 *)malloc(OPUS_ENCODE_BUFFER_SIZE);
-  encoder_output_buffer = (uint8_t *)malloc(OPUS_OUT_BUFFER_SIZE);
-}
-
-void lk_send_audio(PeerConnection *peer_connection) {
+const int16_t *lk_capture_audio(size_t *bytes) {
+  size_t bytes_to_read = EXAMPLE_BUFFER_SIZE - bytes_captured;
   size_t bytes_read = 0;
-  i2s_channel_read(rx_handle, encoder_input_buffer, OPUS_ENCODE_BUFFER_SIZE,
-                   &bytes_read, portMAX_DELAY);
+  int16_t *ptr = capture_buffer + bytes_captured / 2;
+  i2s_channel_read(rx_handle, ptr, bytes_to_read, &bytes_read, 0);  // timeout?
+  bytes_captured += bytes_read;
+  if (bytes_read < bytes_to_read) {
+    return NULL;
+  }
+  if (bytes) {
+    *bytes = bytes_captured;
+  }
+  bytes_captured = 0;
+  return capture_buffer;
+}
 
-#ifndef CONFIG_EXAMPLE_MODE_ECHO
-  auto encoded_size =
-      opus_encode(opus_encoder, encoder_input_buffer,
-                  bytes_read / (EXAMPLE_NUM_CHANNELS * sizeof(opus_int16)),
-                  encoder_output_buffer, OPUS_OUT_BUFFER_SIZE);
-
-  peer_connection_send_audio(peer_connection, encoder_output_buffer,
-                             encoded_size);
-#else
-  i2s_channel_write(tx_handle, encoder_input_buffer, bytes_read, NULL, 1000);
-#endif
+void lk_render_audio(const int16_t *data, size_t bytes) {
+  size_t bytes_written = 0;
+  int ret = i2s_channel_write(tx_handle, data, bytes, &bytes_written, 1000);
+  if (ret != ESP_OK) {
+    panic("i2s write failed");
+  }
+  if (bytes_written != bytes) {
+    panic("i2s write bytes mismatch");
+  }
 }

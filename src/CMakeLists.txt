@@ -1,8 +1,9 @@
 set(COMMON_SRC
 	"../deps/livekit-protocol-generated/livekit_models.pb-c.c"
 	"../deps/livekit-protocol-generated/livekit_rtc.pb-c.c"
-	"webrtc.cpp"
-	"websocket.cpp"
+	"livekit.cpp"
+	"lk_pub.cpp"
+	"lk_sub.cpp"	
 	"main.cpp")
 
 if(IDF_TARGET STREQUAL linux)

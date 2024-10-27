@@ -22,9 +22,9 @@ extern "C" void app_main(void) {
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   peer_init();
-  lk_init_audio_capture();
-  lk_init_audio_decoder();
+  lk_init_audio();
   lk_wifi();
+
   CallRequest request;
   request.system_prompt = SANTA_SYSTEM_PROMPT;
   request.voice = SANTA_VOICE;
@@ -37,3 +37,8 @@ int main(void) {
   lk_websocket(LIVEKIT_URL, LIVEKIT_TOKEN);
 }
 #endif
+
+void panic(const char *msg) {
+  ESP_LOGE(LOG_TAG, "Panic: %s", msg);
+  abort();
+}
