@@ -21,7 +21,7 @@ An overview of the code in this project:
 - Electrical noise on the ESP32-S3 microphone input. This seems to be related to the wifi module, I didn't test super closely but I couldn't hear this noise in the aiphone echo sample.
 - Occasional failures to connect to the ultravox servers. This seems to be related to the audio module, almost like when the audio pipeline is running, the network module doesn't get enough processing time.
   When the audio module is not inited (via lk_audio_init), I don't see these errors (typically issues with the REST request failing).
-- Occasional watchdog timeouts, especially on the publisher task. Some more debugging is needed here, it seems like something is blocking in the task loop but I can't pin down what.
+- Occasional watchdog timeouts, especially on the publisher task. Some more debugging is needed here, it's blocking sometimes in peer_connection_loop but I can't pin down why.
 - It takes a while to set up a call (5-10 seconds from when wifi is connected to when the call is set up). Some of this may be related to the audio/network issue mentioned above, as
   things progress much faster when the audio module is not inited, so it may be possible to bring this down substantially.
   There are also some othe potential optimizations, e.g. starting the publisher protocol (add_track) immediately on websocket open rather than waiting for the subscriber to connect.
